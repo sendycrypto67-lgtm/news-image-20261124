@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Entry program for make.fun bounty news-image-20261124.
+"""Validator and copier for the news-image-20261124 v2 entry.
 
-Validates the bundled entry.png (a whole PNG, at most 1 MiB and at most
-1024 by 1024 pixels) and copies it byte-for-byte to
-$MAKEFUN_OUTPUT_DIR/entry.png.
+Finds entry.png next to this script, validates it as a well-formed PNG
+(PNG magic, size at most 1048576 bytes, IHDR dimensions at most 1024 on
+each side with a valid bit depth and colour type, CRC32 of every chunk,
+and a well-formed IEND chunk at the end of the file with no trailing
+bytes), then copies it byte-for-byte to $MAKEFUN_OUTPUT_DIR/entry.png.
 
-Standard library only. No network access. Deterministic: the same input
-bytes always produce the same output bytes.
+Python 3 standard library only, no network. Deterministic: the output
+is a byte-for-byte copy of the validated input.
 
-Usage:
-    MAKEFUN_OUTPUT_DIR=out python3 main.py
+Any failure exits 1 with a message on stderr.
 """
 
 import os
@@ -17,106 +18,93 @@ import struct
 import sys
 import zlib
 
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 MAX_BYTES = 1048576
-MAX_DIMENSION = 1024
+MAX_DIM = 1024
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+# colour type -> allowed bit depths (PNG spec)
+VALID_DEPTHS = {
+    0: (1, 2, 4, 8, 16),
+    2: (8, 16),
+    3: (1, 2, 4, 8),
+    4: (8, 16),
+    6: (8, 16),
+}
 
 
 def fail(message):
-    print("main.py: error: " + message, file=sys.stderr)
-    return 1
+    print("error: %s" % message, file=sys.stderr)
+    sys.exit(1)
 
 
 def read_chunks(data):
-    """Yield (chunk_type, chunk_data) for every chunk in a PNG byte string.
-
-    Raises ValueError on any structural problem: bad magic, truncated
-    chunk header, chunk length running past the end of the file, or a
-    chunk CRC mismatch.
-    """
-    if data[:8] != PNG_MAGIC:
-        raise ValueError("not a PNG file (bad magic bytes)")
-    pos = 8
-    while pos < len(data):
+    """Yield (type, payload) for each chunk, verifying CRC32 and structure."""
+    pos = len(PNG_MAGIC)
+    while True:
         if pos + 8 > len(data):
-            raise ValueError("truncated chunk header")
+            fail("truncated chunk header at offset %d" % pos)
         length = struct.unpack(">I", data[pos:pos + 4])[0]
-        chunk_type = data[pos + 4:pos + 8]
+        ctype = data[pos + 4:pos + 8]
         start = pos + 8
         end = start + length
         if end + 4 > len(data):
-            raise ValueError("chunk %r runs past end of file" % chunk_type)
-        chunk_data = data[start:end]
+            fail("truncated chunk %r at offset %d" % (ctype, pos))
+        payload = data[start:end]
         stored_crc = struct.unpack(">I", data[end:end + 4])[0]
-        actual_crc = zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF
+        actual_crc = zlib.crc32(ctype + payload) & 0xFFFFFFFF
         if stored_crc != actual_crc:
-            raise ValueError("CRC mismatch in chunk %r" % chunk_type)
-        yield chunk_type, chunk_data
+            fail("CRC mismatch in chunk %r" % ctype)
+        yield ctype, payload
         pos = end + 4
-        if chunk_type == b"IEND":
+        if ctype == b"IEND":
             if pos != len(data):
-                raise ValueError("trailing bytes after IEND")
-            break
-
-
-def validate(data):
-    """Check the PNG against the bounty limits. Raises ValueError."""
-    if len(data) > MAX_BYTES:
-        raise ValueError(
-            "file is %d bytes, over the 1048576 byte limit" % len(data))
-    if len(data) < 8:
-        raise ValueError("file too small to be a PNG")
-    chunks = list(read_chunks(data))
-    if not chunks or chunks[0][0] != b"IHDR":
-        raise ValueError("first chunk is not IHDR")
-    ihdr = chunks[0][1]
-    if len(ihdr) != 13:
-        raise ValueError("IHDR chunk has wrong length")
-    width, height, bit_depth, color_type = struct.unpack(">IIBB", ihdr[:10])
-    if width == 0 or height == 0:
-        raise ValueError("image has zero width or height")
-    if width > MAX_DIMENSION or height > MAX_DIMENSION:
-        raise ValueError(
-            "image is %dx%d, over the 1024x1024 limit" % (width, height))
-    if bit_depth not in (1, 2, 4, 8, 16):
-        raise ValueError("unsupported bit depth %d" % bit_depth)
-    if color_type not in (0, 2, 3, 4, 6):
-        raise ValueError("unsupported color type %d" % color_type)
-    if chunks[-1][0] != b"IEND":
-        raise ValueError("missing trailing IEND chunk")
-    if not any(c[0] == b"IDAT" for c in chunks):
-        raise ValueError("no IDAT chunk found")
-    return width, height
+                fail("trailing bytes after IEND (%d bytes)" % (len(data) - pos))
+            return
 
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
-    source = os.path.join(here, "entry.png")
-    output_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "out")
-    target = os.path.join(output_dir, "entry.png")
+    src = os.path.join(here, "entry.png")
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR")
+    if not out_dir:
+        fail("MAKEFUN_OUTPUT_DIR is not set")
 
     try:
-        with open(source, "rb") as handle:
-            data = handle.read()
+        with open(src, "rb") as f:
+            data = f.read()
     except OSError as exc:
-        return fail("cannot read %s: %s" % (source, exc))
+        fail("cannot read %s: %s" % (src, exc))
 
-    try:
-        width, height = validate(data)
-    except ValueError as exc:
-        return fail(str(exc))
+    if len(data) > MAX_BYTES:
+        fail("entry.png is %d bytes, over the %d byte limit"
+             % (len(data), MAX_BYTES))
+    if len(data) < len(PNG_MAGIC) or data[:len(PNG_MAGIC)] != PNG_MAGIC:
+        fail("entry.png is not a PNG file (bad magic bytes)")
 
+    chunks = list(read_chunks(data))
+    if not chunks or chunks[0][0] != b"IHDR":
+        fail("first chunk is not IHDR")
+    if len(chunks) < 2 or chunks[-1][0] != b"IEND":
+        fail("missing IEND chunk")
+    if len(chunks[0][1]) != 13:
+        fail("IHDR chunk has wrong length")
+
+    width, height, depth, colour = struct.unpack(">IIBB", chunks[0][1][:10])
+    if width == 0 or height == 0:
+        fail("IHDR has zero dimension")
+    if width > MAX_DIM or height > MAX_DIM:
+        fail("dimensions %dx%d exceed the %d limit" % (width, height, MAX_DIM))
+    if colour not in VALID_DEPTHS or depth not in VALID_DEPTHS[colour]:
+        fail("invalid bit depth %d for colour type %d" % (depth, colour))
+
+    os.makedirs(out_dir, exist_ok=True)
+    dest = os.path.join(out_dir, "entry.png")
     try:
-        os.makedirs(output_dir, exist_ok=True)
-        with open(target, "wb") as handle:
-            handle.write(data)
+        with open(dest, "wb") as f:
+            f.write(data)
     except OSError as exc:
-        return fail("cannot write %s: %s" % (target, exc))
-
-    print("main.py: wrote %s (%dx%d PNG, %d bytes)"
-          % (target, width, height, len(data)))
-    return 0
+        fail("cannot write %s: %s" % (dest, exc))
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
