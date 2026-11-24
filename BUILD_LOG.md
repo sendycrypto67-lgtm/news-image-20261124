@@ -129,3 +129,14 @@ Dua run main.py ke direktori berbeda menghasilkan sha256 yang sama
 dengan file repo di atas. Tes negatif (bukan PNG, oversize,
 trailing bytes, dimensi 1200x1200, MAKEFUN_OUTPUT_DIR tidak diset)
 semuanya ditolak dengan exit 1.
+
+## Verifikasi koordinator (24 Nov ~21:40 WIB)
+- Baca visual entry.png: masthead, tanggal, deck, hero LIBYA dominan,
+  5 cerita lain sesuai brief, footer sumber. Tanpa cacat teks, tanpa
+  teks terpotong atau tumpang tindih, tanpa angka korban, tanpa em-dash.
+- main.py 2x run ke dir berbeda, sha256 output identik dengan file repo
+  (7423086f...). Tes negatif non-PNG exit 1.
+- Edit koordinator (perbaikan validasi asli, perilaku output tidak
+  berubah): main.py kini juga menolak IEND yang membawa payload dan
+  PNG tanpa chunk IDAT (tanpa data gambar). Setelah edit, main.py 2x
+  run tetap menghasilkan sha256 output 7423086f... yang sama.
