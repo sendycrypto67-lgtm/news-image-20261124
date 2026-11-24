@@ -4,8 +4,9 @@
 Finds entry.png next to this script, validates it as a well-formed PNG
 (PNG magic, size at most 1048576 bytes, IHDR dimensions at most 1024 on
 each side with a valid bit depth and colour type, CRC32 of every chunk,
-and a well-formed IEND chunk at the end of the file with no trailing
-bytes), then copies it byte-for-byte to $MAKEFUN_OUTPUT_DIR/entry.png.
+at least one IDAT chunk holding image data, an empty IEND chunk at the
+end of the file with no trailing bytes), then copies it byte-for-byte to
+$MAKEFUN_OUTPUT_DIR/entry.png.
 
 Python 3 standard library only, no network. Deterministic: the output
 is a byte-for-byte copy of the validated input.
@@ -86,6 +87,10 @@ def main():
         fail("first chunk is not IHDR")
     if len(chunks) < 2 or chunks[-1][0] != b"IEND":
         fail("missing IEND chunk")
+    if chunks[-1][1]:
+        fail("IEND chunk has a payload")
+    if not any(ctype == b"IDAT" for ctype, _ in chunks):
+        fail("missing IDAT chunk (no image data)")
     if len(chunks[0][1]) != 13:
         fail("IHDR chunk has wrong length")
 
